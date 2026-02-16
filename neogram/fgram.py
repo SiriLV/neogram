@@ -146,6 +146,7 @@ class User(TelegramObject):
     can_connect_to_business: Optional[bool] = None
     has_main_web_app: Optional[bool] = None
     has_topics_enabled: Optional[bool] = None
+    allows_users_to_create_topics: Optional[bool] = None
 
 @dataclass
 class Chat(TelegramObject):
@@ -208,6 +209,7 @@ class ChatFullInfo(TelegramObject):
     linked_chat_id: Optional[int] = None
     location: Optional["ChatLocation"] = None
     rating: Optional["UserRating"] = None
+    first_profile_audio: Optional["Audio"] = None
     unique_gift_colors: Optional["UniqueGiftColors"] = None
     paid_message_star_count: Optional[int] = None
 
@@ -267,6 +269,8 @@ class Message(TelegramObject):
     location: Optional["Location"] = None
     new_chat_members: Optional[List["User"]] = None
     left_chat_member: Optional["User"] = None
+    chat_owner_left: Optional["ChatOwnerLeft"] = None
+    chat_owner_changed: Optional["ChatOwnerChanged"] = None
     new_chat_title: Optional[str] = None
     new_chat_photo: Optional[List["PhotoSize"]] = None
     delete_chat_photo: Optional[bool] = None
@@ -465,6 +469,15 @@ class Story(TelegramObject):
     id: int
 
 @dataclass
+class VideoQuality(TelegramObject):
+    file_id: str
+    file_unique_id: str
+    width: int
+    height: int
+    codec: str
+    file_size: Optional[int] = None
+
+@dataclass
 class Video(TelegramObject):
     file_id: str
     file_unique_id: str
@@ -474,6 +487,7 @@ class Video(TelegramObject):
     thumbnail: Optional["PhotoSize"] = None
     cover: Optional[List["PhotoSize"]] = None
     start_timestamp: Optional[int] = None
+    qualities: Optional[List["VideoQuality"]] = None
     file_name: Optional[str] = None
     mime_type: Optional[str] = None
     file_size: Optional[int] = None
@@ -890,6 +904,11 @@ class UserProfilePhotos(TelegramObject):
     photos: List[List["PhotoSize"]]
 
 @dataclass
+class UserProfileAudios(TelegramObject):
+    total_count: int
+    audios: List["Audio"]
+
+@dataclass
 class File(TelegramObject):
     file_id: str
     file_unique_id: str
@@ -912,6 +931,8 @@ class ReplyKeyboardMarkup(TelegramObject):
 @dataclass
 class KeyboardButton(TelegramObject):
     text: str
+    icon_custom_emoji_id: Optional[str] = None
+    style: Optional[str] = None
     request_users: Optional["KeyboardButtonRequestUsers"] = None
     request_chat: Optional["KeyboardButtonRequestChat"] = None
     request_contact: Optional[bool] = None
@@ -959,6 +980,8 @@ class InlineKeyboardMarkup(TelegramObject):
 @dataclass
 class InlineKeyboardButton(TelegramObject):
     text: str
+    icon_custom_emoji_id: Optional[str] = None
+    style: Optional[str] = None
     url: Optional[str] = None
     callback_data: Optional[str] = None
     web_app: Optional["WebAppInfo"] = None
@@ -1328,6 +1351,7 @@ class UniqueGiftModel(TelegramObject):
     name: str
     sticker: "Sticker"
     rarity_per_mille: int
+    rarity: Optional[str] = None
 
 @dataclass
 class UniqueGiftSymbol(TelegramObject):
@@ -1367,6 +1391,7 @@ class UniqueGift(TelegramObject):
     symbol: "UniqueGiftSymbol"
     backdrop: "UniqueGiftBackdrop"
     is_premium: Optional[bool] = None
+    is_burned: Optional[bool] = None
     is_from_blockchain: Optional[bool] = None
     colors: Optional["UniqueGiftColors"] = None
     publisher_chat: Optional["Chat"] = None
@@ -1558,6 +1583,14 @@ class ChatBoostRemoved(TelegramObject):
     boost_id: str
     remove_date: int
     source: Union["ChatBoostSourcePremium", "ChatBoostSourceGiftCode", "ChatBoostSourceGiveaway"]
+
+@dataclass
+class ChatOwnerLeft(TelegramObject):
+    new_owner: Optional["User"] = None
+
+@dataclass
+class ChatOwnerChanged(TelegramObject):
+    new_owner: "User"
 
 @dataclass
 class UserChatBoosts(TelegramObject):
@@ -3229,6 +3262,21 @@ class Bot:
             return UserProfilePhotos.from_dict(response['result'])
         return None
 
+    def get_user_profile_audios(self, user_id: Optional[int] = None, offset: Optional[int] = None, limit: Optional[int] = None) -> Optional["UserProfileAudios"]:
+        """Use this method to get a list of profile audios for a user. Returns a UserProfileAudios object."""
+        method = 'getUserProfileAudios'
+        if user_id is None: raise ValueError('user_id required')
+        params = {
+            'user_id': user_id,
+            'offset': offset,
+            'limit': limit,
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        response = self._make_request(method, params)
+        if response and 'result' in response:
+            return UserProfileAudios.from_dict(response['result'])
+        return None
+
     def set_user_emoji_status(self, user_id: Optional[int] = None, emoji_status_custom_emoji_id: Optional[str] = None, emoji_status_expiration_date: Optional[int] = None) -> Optional[bool]:
         """Changes the emoji status for a given user that previously allowed the bot to manage their emoji status via the Mini App method requestEmojiStatusAccess. Returns True on success."""
         method = 'setUserEmojiStatus'
@@ -3701,7 +3749,7 @@ class Bot:
         return None
 
     def create_forum_topic(self, chat_id: Optional[Union[int, str]] = None, name: Optional[str] = None, icon_color: Optional[int] = None, icon_custom_emoji_id: Optional[str] = None) -> Optional["ForumTopic"]:
-        """Use this method to create a topic in a forum supergroup chat. The bot must be an administrator in the chat for this to work and must have the can_manage_topics administrator rights. Returns information about the created topic as a ForumTopic object."""
+        """Use this method to create a topic in a forum supergroup chat or a private chat with a user. In the case of a supergroup chat the bot must be an administrator in the chat for this to work and must have the can_manage_topics administrator right. Returns information about the created topic as a ForumTopic object."""
         method = 'createForumTopic'
         if chat_id is None: raise ValueError('chat_id required')
         if name is None: raise ValueError('name required')
@@ -4000,6 +4048,26 @@ class Bot:
         if response and 'result' in response:
             return BotShortDescription.from_dict(response['result'])
         return None
+
+    def set_my_profile_photo(self, photo: Optional["InputProfilePhoto"] = None) -> Optional[bool]:
+        """Changes the profile photo of the bot. Returns True on success."""
+        method = 'setMyProfilePhoto'
+        if photo is None: raise ValueError('photo required')
+        params = {
+            'photo': _serialize(photo),
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        response = self._make_request(method, params)
+        return response.get('result')
+
+    def remove_my_profile_photo(self) -> Optional[bool]:
+        """Removes the profile photo of the bot. Requires no parameters. Returns True on success."""
+        method = 'removeMyProfilePhoto'
+        params = {
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        response = self._make_request(method, params)
+        return response.get('result')
 
     def set_chat_menu_button(self, chat_id: Optional[int] = None, menu_button: Optional[Union["MenuButtonCommands", "MenuButtonWebApp", "MenuButtonDefault"]] = None) -> Optional[bool]:
         """Use this method to change the bot's menu button in a private chat, or the default menu button. Returns True on success."""

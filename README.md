@@ -1,4 +1,4 @@
-# 📚 Документация neogram v9.3
+# 📚 Документация neogram v9.4
 
 **Установка:**
 
@@ -51,7 +51,7 @@ bot = Bot(token="YOUR_TOKEN", timeout=60)
 Классы для интеграции с внешними AI-сервисами.
 
 ### Класс `OnlySQ`
-Интерфейс к сервису OnlySQ.
+Интерфейс к сервису OnlySQ. Для пользования потребуетя api ключ: https://my.onlysq.ru/
 *   `get_models(...)`: Получить список доступных моделей.
 *   `generate_answer(model, messages)`: Генерация текста (чат).
 *   `generate_image(model, prompt, ...)`: Генерация изображений.
@@ -60,8 +60,7 @@ bot = Bot(token="YOUR_TOKEN", timeout=60)
 Набор утилит и альтернативных API.
 *   `translate(text, lang)`: Перевод текста (через Google Translate).
 *   `short_url(long_url)`: Сокращение ссылок (clck.ru).
-*   `gen_ai_response(model, messages)`: Генерация ответа (Qwen/GPT OSS).
-*   `gen_gpt(messages)`: Генерация через ItalyGPT.
+*   `perplexity_ask(model, query)`: Генерация через PerplexityAI
 *   `encode_base64(path)`: Кодирование файла в base64.
 *   `run_in_bg(func, ...)`: Запуск функции в отдельном потоке.
 

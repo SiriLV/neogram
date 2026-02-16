@@ -1,14 +1,20 @@
-import requests, json, base64, threading, re, bs4
+import requests, json, base64, threading, re, bs4, uuid
 from typing import Union, BinaryIO
+from curl_cffi.requests import Session
 
 #Блок - Нейросети
 class OnlySQ:
-    def get_models(self, modality: str | list = None, can_tools: bool = None, can_stream: bool = None, status: str = None, max_cost: float = None, return_names: bool = False) -> list:
+    '''Ключ брать тут: https://my.onlysq.ru/'''
+    def __init__(self, key: str):
+        self.key = key
+
+    def get_models(self, modality: str | list = None, can_tools: bool = None, can_think: bool = None, can_stream: bool = None, status: str = None, max_cost: float = None, return_names: bool = False) -> list:
         """
         Фильтрует модели по заданным параметрам
         Args:
             modality: Модальность ('text', 'image', 'sound') или список модальностей
             can_tools: Фильтр по поддержке инструментов
+            can_think: Фильтр по возможности "думать" (reasoning)
             can_stream: Фильтр по возможности потоковой передачи
             status: Статус модели (например, 'work')
             max_cost: Максимальная стоимость (включительно)
@@ -33,6 +39,10 @@ class OnlySQ:
                 if matches and can_tools is not None:
                     model_tools = model_data.get("can-tools", False)
                     if model_tools != can_tools:
+                        matches = False
+                if matches and can_think is not None:
+                    model_can_think = model_data.get("can-think", False)
+                    if model_can_think != can_think:
                         matches = False
                 if matches and can_stream is not None:
                     model_can_stream = model_data.get("can-stream", False)
@@ -63,7 +73,7 @@ class OnlySQ:
                 raise ValueError("Забыли указать messages")
             else:
                 payload = {"model": model, "request": {"messages": messages}}
-                response = requests.post("http://api.onlysq.ru/ai/v2", json=payload, headers={"Authorization":"Bearer openai"})
+                response = requests.post("http://api.onlysq.ru/ai/v2", json=payload, headers={"Authorization": f"Bearer {self.key}"})
                 response.raise_for_status()
                 return response.json()["choices"][0]["message"]["content"]
         except Exception as e:
@@ -77,7 +87,7 @@ class OnlySQ:
                 raise ValueError("Забыли указать prompt")
             else:
                 payload = {"model": model, "prompt": prompt, "ratio": ratio}
-                response = requests.post("https://api.onlysq.ru/ai/imagen", json=payload, headers={"Authorization":"Bearer openai"})
+                response = requests.post("https://api.onlysq.ru/ai/imagen", json=payload, headers={"Authorization": f"Bearer {self.key}"})
                 if response.status_code == 200:
                     img_bytes = base64.b64decode(response.json()["files"][0])
                     with open(filename, 'wb') as f:
@@ -132,74 +142,163 @@ class Deef:
         except FileNotFoundError:
             return None
     
-    def gen_ai_response(self, model: str = "Qwen3 235B", messages: list = None) -> dict[str]:
+    def perplexity_ask(self, model: str, query: str) -> dict:
         """
-        Отправляет запрос к API и возвращает словарь с полной информацией
-        Args:
-            model: Модель нейросети (Qwen3 235B или GPT OSS 120B)
-            messages: Список сообщений в формате [{"role": "...", "content": "..."}]
-        Returns:
-            dict[str]: Словарь с ключами:
-                - reasoning: Размышления модели
-                - answer: Финальный ответ модели
-                - status: Статус выполнения
-                - cluster_info: Информация о кластере (если есть)
+        Вывод: словари с ключом 'type' и данными:
+            - {"type": "text", "content": "..."}
+            - {"type": "sources", "sources": [...]}
+            - {"type": "reasoning", "content": "...", "status": "thinking"|"done"}
+            - {"type": "media", "items": [...]}
+            - {"type": "followups", "followups": [...]}
+            - {"type": "finish", "reason": "stop"}
         """
-        try:
-            if messages is None:
-                raise ValueError("Забыли указать messages")
-            else:
-                model_to_cluster = {"Qwen3 235B": "hybrid", "GPT OSS 120B": "nvidia"}
-                cluster_mode = model_to_cluster.get(model)
-                if cluster_mode is None:
-                    raise ValueError(f"Неизвестная модель: {model}, Доступные модели: {list(model_to_cluster.keys())}")
-                data = {"model": model, "clusterMode": cluster_mode, "messages": messages, "enableThinking": True}
-                url = "https://chat.gradient.network/api/generate"
-                response = requests.post(url, json=data, stream=True)
-                result = {"reasoning": "", "answer": "", "status": "unknown", "cluster_info": None}
-                for line in response.iter_lines():
-                    if line:
-                        try:
-                            json_obj = json.loads(line.decode('utf-8'))
-                            message_type = json_obj.get("type")
-                            if message_type == "reply":
-                                data_content = json_obj.get("data", {})
-                                if "reasoningContent" in data_content:
-                                    result["reasoning"] += data_content.get("reasoningContent", "")
-                                if "content" in data_content:
-                                    result["answer"] += data_content.get("content", "")
-                            elif message_type == "jobInfo":
-                                status = json_obj.get("data", {}).get("status")
-                                result["status"] = status
-                                if status == "completed":
-                                    break
-                            elif message_type == "clusterInfo":
-                                result["cluster_info"] = json_obj.get("data", {})
-                        except json.JSONDecodeError as e:
-                            print(f"Ошибка декодирования JSON: {e}")
-                            continue
-                        except Exception as e:
-                            print(f"Неожиданная ошибка: {e}")
-                            continue
-                return result
-        except Exception as e:
-            print(f"Deef(gen_ai_response): {e}")
-            return {"reasoning": "Error", "answer": "Error", "status": "unknown", "cluster_info": None}
-    
-    def gen_gpt(self, messages: list = None) -> str:
-        """Генерация текста с помощью GPT-4o"""
-        try:
-            if messages is None:
-                raise ValueError("Забыли указать messages")
-            else:
-                r = requests.post("https://italygpt.it/api/chat", json={"messages": messages, "stream": True}, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36", "Accept": "text/event-stream"})
-                if r.status_code == 200:
-                    return r.text
-                else:
-                    return "Error"
-        except Exception as e:
-            print(f"Deef(gen_gpt): {e}")
-            return "Error"
+        #https://www.perplexity.ai/rest/models/config?config_schema=v1&version=2.18&source=default
+        MODELS = [
+            "turbo", "pplx_pro", "pplx_pro_upgraded", "experimental", "gpt4o",
+            "gpt41", "gpt5", "gpt5_thinking", "gpt51", "gpt51_thinking",
+            "gpt51_low_thinking", "gpt5_mini", "gpt5_nano", "gpt5_pro", "chatgpt_tools",
+            "gpt52", "gpt52_thinking", "gpt52_pro", "claude2", "claude37sonnetthinking",
+            "claude40sonnetthinking", "gemini25pro", "gemini30pro", "gemini30flash", "gemini30flash_high",
+            "grok", "claude40opus", "claude40opusthinking", "claude41opus", "claude41opusthinking",
+            "claude45opus", "claude45opusthinking", "claude46opus", "claude46opusthinking", "claude45sonnet", "claude45sonnetthinking",
+            "claude45haiku", "claude45haikuthinking", "kimik2thinking", "kimik25thinking", "grok4", "grok4nonthinking",
+            "grok41reasoning", "grok41nonreasoning", "o4mini", "o3pro", "pplx_sonar_internal_testing", "pplx_sonar_internal_testing_v2",
+            "pplx_alpha", "pplx_beta", "pplx_study", "pplx_agentic_research", "pplx_asi", "pplx_document_review", "comet_browser_agent_sonnet", "comet_browser_agent_opus"]
+        BASE_URL = "https://www.perplexity.ai"
+        if model not in MODELS:
+            model = MODELS[0]
+        frontend_uid = str(uuid.uuid4())
+        frontend_context_uuid = str(uuid.uuid4())
+        visitor_id = str(uuid.uuid4())
+        headers = {
+            "accept": "text/event-stream",
+            "accept-language": "en-US,en;q=0.9",
+            "cache-control": "no-cache",
+            "content-type": "application/json",
+            "origin": BASE_URL,
+            "referer": f"{BASE_URL}/",
+            "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+            "x-perplexity-request-reason": "perplexity-query-state-provider"}
+        with Session(headers=headers, timeout=300, impersonate="chrome") as session:
+            resp = session.get(f"{BASE_URL}/api/auth/session")
+            user_id = resp.json().get("user", {}).get("id")
+            if model == "auto":
+                model = "pplx_pro" if user_id else "turbo"
+            data = {
+                "params": {
+                    "attachments": [],
+                    "language": "en-US",
+                    "timezone": "America/New_York",
+                    "followup_source": "link",
+                    "search_focus": "internet",
+                    "source": "default",
+                    "sources": ["edgar", "social", "web", "scholar"],
+                    "frontend_uuid": frontend_uid,
+                    "mode": "concise",
+                    "model_preference": model,
+                    "visitor_id": visitor_id,
+                    "frontend_context_uuid": frontend_context_uuid,
+                    "prompt_source": "user",
+                    "query_source": "followup",
+                    "use_schematized_api": True,
+                    "supported_block_use_cases": [
+                        "answer_modes", "media_items", "knowledge_cards", "inline_entity_cards",
+                        "place_widgets", "finance_widgets", "prediction_market_widgets", "sports_widgets",
+                        "flight_status_widgets", "news_widgets", "shopping_widgets", "jobs_widgets",
+                        "search_result_widgets", "inline_images", "inline_assets", "placeholder_cards",
+                        "diff_blocks", "inline_knowledge_cards", "entity_group_v2", "refinement_filters",
+                        "canvas_mode", "maps_preview", "answer_tabs", "price_comparison_widgets",
+                        "preserve_latex", "generic_onboarding_widgets", "in_context_suggestions"
+                    ],
+                    "version": "2.18"
+                }, "query_str": query}
+            response = session.post(f"{BASE_URL}/rest/sse/perplexity_ask", json=data)
+            if response.status_code >= 400:
+                raise Exception(f"HTTP {response.status_code}")
+            content = response.content
+            if isinstance(content, bytes):
+                content = content.decode('utf-8')
+            full_response = ""
+            full_reasoning = ""
+            sources_sent = False
+            for line in content.split('\n'):
+                line = line.strip()
+                if not line.startswith('data: '):
+                    continue
+                data_str = line[6:]
+                if not data_str or data_str == '[DONE]':
+                    continue
+                try:
+                    json_data = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                for block in json_data.get("blocks", []):
+                    intended_usage = block.get("intended_usage", "")
+                    if intended_usage == "sources_answer_mode":
+                        sources_block = block.get("sources_mode_block", {})
+                        web_results = sources_block.get("web_results", [])
+                        if web_results and not sources_sent:
+                            yield {"type": "sources", "sources": web_results}
+                            sources_sent = True
+                        continue
+                    if intended_usage == "media_items":
+                        media_block = block.get("media_block", {})
+                        media_items = media_block.get("media_items", [])
+                        if media_items:
+                            items = []
+                            for item in media_items:
+                                items.append({
+                                    "media_type": item.get("medium", "unknown"),
+                                    "url": item.get("url", ""),
+                                    "title": item.get("name", ""),
+                                    "width": item.get("image_width"),
+                                    "height": item.get("image_height")
+                                })
+                            yield {"type": "media", "items": items}
+                        continue
+                    if intended_usage in ("pro_search_steps", "plan"):
+                        plan_block = block.get("plan_block", {})
+                        if plan_block:
+                            goals = plan_block.get("goals", [])
+                            progress = plan_block.get("progress", "")
+                            for goal in goals:
+                                if isinstance(goal, str) and goal:
+                                    yield {"type": "reasoning", "content": goal, "status": "thinking"}
+                            if progress == "DONE":
+                                yield {"type": "reasoning", "content": "", "status": "done"}
+                        diff_block = block.get("diff_block", {})
+                        if diff_block.get("field") == "plan_block":
+                            for patch in diff_block.get("patches", []):
+                                if patch.get("path", "").startswith("/goals"):
+                                    value = patch.get("value", "")
+                                    if isinstance(value, str) and value:
+                                        new_reasoning = value[len(full_reasoning):] if value.startswith(full_reasoning) else value
+                                        if new_reasoning:
+                                            full_reasoning = value if value.startswith(full_reasoning) else full_reasoning + value
+                                            yield {"type": "reasoning", "content": new_reasoning, "status": "thinking"}
+                        continue
+                    if intended_usage != "ask_text_0_markdown":
+                        continue
+                    diff_block = block.get("diff_block", {})
+                    if diff_block.get("field") != "markdown_block":
+                        continue
+                    for patch in diff_block.get("patches", []):
+                        value = patch.get("value", "")
+                        if isinstance(value, dict) and "chunks" in value:
+                            text = "".join(value.get("chunks", []))
+                            if text and len(text) > len(full_response):
+                                new_text = text[len(full_response):]
+                                full_response = text
+                                yield {"type": "text", "content": new_text}
+                        elif patch.get("op") == "add" and isinstance(value, str) and value:
+                            full_response += value
+                            yield {"type": "text", "content": value}
+                if "related_query_items" in json_data:
+                    followups = [i.get("text", "") for i in json_data["related_query_items"]]
+                    if followups:
+                        yield {"type": "followups", "followups": followups}
+                if json_data.get("status") == "COMPLETED":
+                    yield {"type": "finish", "reason": "stop"}
 
 
 class ChatGPT:
