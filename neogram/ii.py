@@ -1,232 +1,246 @@
-import requests, json, base64, threading, re, bs4, uuid
-from typing import Union, BinaryIO
-from curl_cffi.requests import Session
+#ii.py
+import json
+import base64
+import threading
+import uuid
+import logging
+from typing import Union, BinaryIO, Optional, Generator
+from urllib.parse import quote as url_quote
+import bs4
+from curl_cffi import requests as curl_requests
+from curl_cffi.requests import Session as CurlSession
+logger = logging.getLogger("neogram")
 
-#Блок - Нейросети
+
 class OnlySQ:
-    '''Ключ брать тут: https://my.onlysq.ru/'''
+    '''Клиент API OnlySQ для генерации текста и изображений. Ключ брать тут: https://my.onlysq.ru/'''
     def __init__(self, key: str):
         self.key = key
+        self._base_url = "https://api.onlysq.ru"
 
-    def get_models(self, modality: str | list = None, can_tools: bool = None, can_think: bool = None, can_stream: bool = None, status: str = None, max_cost: float = None, return_names: bool = False) -> list:
-        """
-        Фильтрует модели по заданным параметрам
-        Args:
-            modality: Модальность ('text', 'image', 'sound') или список модальностей
-            can_tools: Фильтр по поддержке инструментов
-            can_think: Фильтр по возможности "думать" (reasoning)
-            can_stream: Фильтр по возможности потоковой передачи
-            status: Статус модели (например, 'work')
-            max_cost: Максимальная стоимость (включительно)
-            return_names: Если True, возвращает названия моделей вместо ключей
-        Returns:
-            Список отфильтрованных моделей (ключи или названия)
-        """
+    def get_models(self, modality: Optional[Union[str, list]] = None, can_tools: Optional[bool] = None, can_think: Optional[bool] = None, can_stream: Optional[bool] = None, status: Optional[str] = None, max_cost: Optional[float] = None, return_names: bool = False) -> list:
+        '''Получает и фильтрует доступные модели'''
         try:
-            response = requests.get('https://api.onlysq.ru/ai/models')
+            response = curl_requests.get(f"{self._base_url}/ai/models", timeout=15)
             response.raise_for_status()
             data = response.json()
-            filtered_models = []
-            for model_key, model_data in data["models"].items():
-                matches = True
-                if modality is not None:
-                    if isinstance(modality, list):
-                        if model_data["modality"] not in modality:
-                            matches = False
-                    else:
-                        if model_data["modality"] != modality:
-                            matches = False
-                if matches and can_tools is not None:
-                    model_tools = model_data.get("can-tools", False)
-                    if model_tools != can_tools:
-                        matches = False
-                if matches and can_think is not None:
-                    model_can_think = model_data.get("can-think", False)
-                    if model_can_think != can_think:
-                        matches = False
-                if matches and can_stream is not None:
-                    model_can_stream = model_data.get("can-stream", False)
-                    if model_can_stream != can_stream:
-                        matches = False
-                if matches and status is not None:
-                    model_status = model_data.get("status", "")
-                    if model_status != status:
-                        matches = False
-                if matches and max_cost is not None:
-                    model_cost = model_data.get("cost", float('inf'))
-                    if float(model_cost) > max_cost:
-                        matches = False
-                if matches:
-                    if return_names:
-                        filtered_models.append(model_data["name"])
-                    else:
-                        filtered_models.append(model_key)
-            return filtered_models 
         except Exception as e:
-            print(f"OnlySQ(get_models): {e}")
+            logger.error(f"OnlySQ.get_models: {e}")
             return []
+        filtered = []
+        for model_key, model_data in data.get("models", {}).items():
+            if modality is not None:
+                if isinstance(modality, list):
+                    if model_data.get("modality") not in modality:
+                        continue
+                elif model_data.get("modality") != modality:
+                    continue
+            if can_tools is not None and model_data.get("can-tools", False) != can_tools:
+                continue
+            if can_think is not None and model_data.get("can-think", False) != can_think:
+                continue
+            if can_stream is not None and model_data.get("can-stream", False) != can_stream:
+                continue
+            if status is not None and model_data.get("status", "") != status:
+                continue
+            if max_cost is not None:
+                try:
+                    if float(model_data.get("cost", float("inf"))) > max_cost:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+            filtered.append(model_data.get("name", model_key) if return_names else model_key)
+        return filtered
 
-    def generate_answer(self, model: str = "gpt-5.2-chat", messages: dict = None) -> str:
-        """Генерация ответа с использованием onlysq"""
+    def generate_answer(self, model: str = "gpt-5.2-chat", messages: Optional[list] = None) -> str:
+        '''Генерация текстового ответа.'''
+        if not messages:
+            raise ValueError("OnlySQ.generate_answer: messages обязателен")
         try:
-            if messages is None:
-                raise ValueError("Забыли указать messages")
-            else:
-                payload = {"model": model, "request": {"messages": messages}}
-                response = requests.post("http://api.onlysq.ru/ai/v2", json=payload, headers={"Authorization": f"Bearer {self.key}"})
-                response.raise_for_status()
-                return response.json()["choices"][0]["message"]["content"]
+            payload = {"model": model, "request": {"messages": messages}}
+            response = curl_requests.post(f"{self._base_url}/ai/v2", json=payload, headers={"Authorization": f"Bearer {self.key}"}, timeout=60)
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]["content"]
         except Exception as e:
-            print(f"OnlySQ(generate_answer): {e}")
-            return "Error"
-    
-    def generate_image(self, model: str = "flux", prompt: str = None, ratio: str = "16:9", filename: str = 'image.png') -> bool:
-        """Генерация фотографии с использованием onlysq"""
+            logger.error(f"OnlySQ.generate_answer: {e}")
+            return f"Error: {e}"
+
+    def generate_image(self, model: str = "flux", prompt: Optional[str] = None, ratio: str = "16:9", filename: str = "image.png") -> bool:
+        '''Генерация изображения'''
+        if not prompt:
+            raise ValueError("OnlySQ.generate_image: prompt обязателен")
         try:
-            if prompt is None:
-                raise ValueError("Забыли указать prompt")
-            else:
-                payload = {"model": model, "prompt": prompt, "ratio": ratio}
-                response = requests.post("https://api.onlysq.ru/ai/imagen", json=payload, headers={"Authorization": f"Bearer {self.key}"})
-                if response.status_code == 200:
-                    img_bytes = base64.b64decode(response.json()["files"][0])
-                    with open(filename, 'wb') as f:
-                        f.write(img_bytes)
-                    return True
-                else:
+            payload = {"model": model, "prompt": prompt, "ratio": ratio}
+            response = curl_requests.post(f"{self._base_url}/ai/imagen", json=payload, headers={"Authorization": f"Bearer {self.key}"}, timeout=120)
+            if response.status_code == 200:
+                files_data = response.json().get("files", [])
+                if not files_data:
                     return False
+                img_bytes = base64.b64decode(files_data[0])
+                with open(filename, "wb") as f:
+                    f.write(img_bytes)
+                return True
+            return False
         except Exception as e:
-            print(f"OnlySQ(generate_image): {e}")
+            logger.error(f"OnlySQ.generate_image: {e}")
             return False
 
 
 class Deef:
+    '''Набор полезных утилит: перевод, сокращение ссылок, фоновые задачи'''
     def translate(self, text: str = None, lang: str = "en") -> str:
-        """Перевод текста"""
+        '''Перевод текста через Google Translate'''
+        if not text:
+            return text or ""
         try:
-            if text is None:
-                raise ValueError("Забыли указать text")
-            base_url = f"https://translate.google.com/m?tl={lang}&sl=auto&q={text}"
-            response = requests.get(base_url)
+            url = f"https://translate.google.com/m?tl={lang}&sl=auto&q={url_quote(text)}"
+            response = curl_requests.get(url, timeout=10)
             soup = bs4.BeautifulSoup(response.text, "html.parser")
-            translated_div = soup.find('div', class_='result-container')
-            return translated_div.text
-        except:
+            result = soup.find("div", class_="result-container")
+            if result:
+                return result.text
+            return text
+        except Exception as e:
+            logger.warning(f"Deef.translate: {e}")
             return text
 
     def short_url(self, long_url: str = None) -> str:
-        """Сокращение ссылок"""
+        '''Сокращение ссылки через clck.ru'''
+        if not long_url:
+            return long_url or ""
         try:
-            response = requests.get(f'https://clck.ru/--?url={long_url}')
+            response = curl_requests.get(f"https://clck.ru/--?url={url_quote(long_url, safe='')}", timeout=10)
             response.raise_for_status()
             return response.text.strip()
-        except:
+        except Exception as e:
+            logger.warning(f"Deef.short_url: {e}")
             return long_url
-    
-    def run_in_bg(self, func, *args, **kwargs):
-        """Запускает функцию в фоне"""
+
+    def run_in_bg(self, func, *args, **kwargs) -> threading.Thread:
+        '''Запускает функцию в фоновом потоке. Возвращает Thread'''
         def wrapper():
             try:
                 func(*args, **kwargs)
             except Exception as e:
-                print(f"Error[{func}]: {e}")
-        threading.Thread(target=wrapper, daemon=True).start()
+                logger.error(f"Deef.run_in_bg({getattr(func, '__name__', '?')}): {e}")
+        thread = threading.Thread(target=wrapper, daemon=True)
+        thread.start()
+        return thread
 
-    def encode_base64(self, path: str = None) -> str:
-        """Кодирует файл в base64"""
+    def encode_base64(self, path: str = None) -> Optional[str]:
+        '''Кодирует файл в base64'''
+        if not path:
+            raise ValueError("Deef.encode_base64: path обязателен")
         try:
-            if path is None:
-                raise ValueError("path must be provided and non-empty")
             with open(path, "rb") as file:
-                return base64.b64encode(file.read()).decode('utf-8')
+                return base64.b64encode(file.read()).decode("utf-8")
         except FileNotFoundError:
+            logger.error(f"Deef.encode_base64: файл не найден: {path}")
             return None
-    
+
     def perplexity_ask(self, model: str, query: str) -> dict:
-        """
-        Вывод: словари с ключом 'type' и данными:
-            - {"type": "text", "content": "..."}
-            - {"type": "sources", "sources": [...]}
-            - {"type": "reasoning", "content": "...", "status": "thinking"|"done"}
-            - {"type": "media", "items": [...]}
-            - {"type": "followups", "followups": [...]}
-            - {"type": "finish", "reason": "stop"}
-        """
-        #https://www.perplexity.ai/rest/models/config?config_schema=v1&version=2.18&source=default
-        MODELS = [
-            "turbo", "pplx_pro", "pplx_pro_upgraded", "experimental", "gpt4o",
-            "gpt41", "gpt5", "gpt5_thinking", "gpt51", "gpt51_thinking",
-            "gpt51_low_thinking", "gpt5_mini", "gpt5_nano", "gpt5_pro", "chatgpt_tools",
-            "gpt52", "gpt52_thinking", "gpt52_pro", "claude2", "claude37sonnetthinking",
-            "claude40sonnetthinking", "gemini25pro", "gemini30pro", "gemini30flash", "gemini30flash_high",
-            "grok", "claude40opus", "claude40opusthinking", "claude41opus", "claude41opusthinking",
-            "claude45opus", "claude45opusthinking", "claude46opus", "claude46opusthinking", "claude45sonnet", "claude45sonnetthinking",
-            "claude45haiku", "claude45haikuthinking", "kimik2thinking", "kimik25thinking", "grok4", "grok4nonthinking",
-            "grok41reasoning", "grok41nonreasoning", "o4mini", "o3pro", "pplx_sonar_internal_testing", "pplx_sonar_internal_testing_v2",
-            "pplx_alpha", "pplx_beta", "pplx_study", "pplx_agentic_research", "pplx_asi", "pplx_document_review", "comet_browser_agent_sonnet", "comet_browser_agent_opus"]
+        '''Запрос к Perplexity AI (неофициальный). Модели загружаются динамически из конфига Perplexity. Если модель не найдена — используется дефолтная.
+        Args:
+            model: Название модели (например "o3pro", "turbo", "auto")
+            query: Текст запроса
+        Returns:
+            {"text": "ответ", "urls": ["url1", "url2", ...]}
+            При ошибке: {"text": "Error", "urls": []}
+        Пример:
+            deef = Deef()
+            result = deef.perplexity_ask("turbo", "Столица Франции?")
+            print(result["text"])
+            for url in result["urls"]:
+                print(url)
+        '''
+        ERROR_RESULT = {"text": "Error", "urls": []}
         BASE_URL = "https://www.perplexity.ai"
-        if model not in MODELS:
-            model = MODELS[0]
-        frontend_uid = str(uuid.uuid4())
-        frontend_context_uuid = str(uuid.uuid4())
-        visitor_id = str(uuid.uuid4())
-        headers = {
-            "accept": "text/event-stream",
-            "accept-language": "en-US,en;q=0.9",
-            "cache-control": "no-cache",
-            "content-type": "application/json",
-            "origin": BASE_URL,
-            "referer": f"{BASE_URL}/",
-            "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-            "x-perplexity-request-reason": "perplexity-query-state-provider"}
-        with Session(headers=headers, timeout=300, impersonate="chrome") as session:
-            resp = session.get(f"{BASE_URL}/api/auth/session")
-            user_id = resp.json().get("user", {}).get("id")
-            if model == "auto":
-                model = "pplx_pro" if user_id else "turbo"
-            data = {
-                "params": {
-                    "attachments": [],
-                    "language": "en-US",
-                    "timezone": "America/New_York",
-                    "followup_source": "link",
-                    "search_focus": "internet",
-                    "source": "default",
-                    "sources": ["edgar", "social", "web", "scholar"],
-                    "frontend_uuid": frontend_uid,
-                    "mode": "concise",
-                    "model_preference": model,
-                    "visitor_id": visitor_id,
-                    "frontend_context_uuid": frontend_context_uuid,
-                    "prompt_source": "user",
-                    "query_source": "followup",
-                    "use_schematized_api": True,
-                    "supported_block_use_cases": [
-                        "answer_modes", "media_items", "knowledge_cards", "inline_entity_cards",
-                        "place_widgets", "finance_widgets", "prediction_market_widgets", "sports_widgets",
-                        "flight_status_widgets", "news_widgets", "shopping_widgets", "jobs_widgets",
-                        "search_result_widgets", "inline_images", "inline_assets", "placeholder_cards",
-                        "diff_blocks", "inline_knowledge_cards", "entity_group_v2", "refinement_filters",
-                        "canvas_mode", "maps_preview", "answer_tabs", "price_comparison_widgets",
-                        "preserve_latex", "generic_onboarding_widgets", "in_context_suggestions"
-                    ],
-                    "version": "2.18"
-                }, "query_str": query}
-            response = session.post(f"{BASE_URL}/rest/sse/perplexity_ask", json=data)
-            if response.status_code >= 400:
-                raise Exception(f"HTTP {response.status_code}")
-            content = response.content
-            if isinstance(content, bytes):
-                content = content.decode('utf-8')
-            full_response = ""
-            full_reasoning = ""
-            sources_sent = False
-            for line in content.split('\n'):
+        MODE_API_MAP = {
+            "search": "copilot",
+            "research": "research",
+            "agentic_research": "agentic_research",
+            "studio": "studio",
+            "study": "study",
+            "document_review": "document_review",
+            "browser_agent": "browser_agent",
+            "asi": "asi"}
+        try:
+            with CurlSession(impersonate="chrome") as config_session:
+                config_resp = config_session.get(f"{BASE_URL}/rest/models/config", params={"config_schema": "v1", "version": "2.18", "source": "default"}, timeout=15)
+                config_json = config_resp.json()
+            models_map = config_json.get("models", {})
+            default_models = config_json.get("default_models", {})
+            available_models = list(models_map.keys())
+            def resolve_mode(model_name: str) -> str:
+                info = models_map.get(model_name, {})
+                raw_mode = info.get("mode", "search")
+                return MODE_API_MAP.get(raw_mode, "copilot")
+            if model not in available_models:
+                model = default_models.get("search", available_models[0] if available_models else "turbo")
+            api_mode = resolve_mode(model)
+            frontend_uid = str(uuid.uuid4())
+            frontend_context_uuid = str(uuid.uuid4())
+            visitor_id = str(uuid.uuid4())
+            headers = {
+                "accept": "text/event-stream",
+                "accept-language": "en-US,en;q=0.9",
+                "cache-control": "no-cache",
+                "content-type": "application/json",
+                "origin": BASE_URL,
+                "referer": f"{BASE_URL}/",
+                "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+                "x-perplexity-request-reason": "perplexity-query-state-provider"}
+            with CurlSession(headers=headers, timeout=300, impersonate="chrome") as session:
+                resp = session.get(f"{BASE_URL}/api/auth/session")
+                user_id = resp.json().get("user", {}).get("id")
+                if model == "auto":
+                    model = "pplx_pro" if user_id else default_models.get("search", "turbo")
+                    api_mode = resolve_mode(model)
+                payload = {
+                    "params": {
+                        "attachments": [],
+                        "language": "en-US",
+                        "timezone": "America/New_York",
+                        "followup_source": "link",
+                        "search_focus": "internet",
+                        "source": "default",
+                        "sources": ["edgar", "social", "web", "scholar"],
+                        "frontend_uuid": frontend_uid,
+                        "mode": api_mode,
+                        "model_preference": model,
+                        "visitor_id": visitor_id,
+                        "frontend_context_uuid": frontend_context_uuid,
+                        "prompt_source": "user",
+                        "query_source": "followup",
+                        "use_schematized_api": True,
+                        "supported_block_use_cases": [
+                            "answer_modes", "media_items", "knowledge_cards",
+                            "inline_entity_cards", "place_widgets", "finance_widgets",
+                            "prediction_market_widgets", "sports_widgets",
+                            "flight_status_widgets", "news_widgets", "shopping_widgets",
+                            "jobs_widgets", "search_result_widgets", "inline_images",
+                            "inline_assets", "placeholder_cards", "diff_blocks",
+                            "inline_knowledge_cards", "entity_group_v2",
+                            "refinement_filters", "canvas_mode", "maps_preview",
+                            "answer_tabs", "price_comparison_widgets", "preserve_latex",
+                            "generic_onboarding_widgets", "in_context_suggestions"],
+                        "version": "2.18"},
+                    "query_str": query}
+                response = session.post(f"{BASE_URL}/rest/sse/perplexity_ask", json=payload)
+                if response.status_code >= 400:
+                    logger.error(f"Deef.perplexity_ask: HTTP {response.status_code}")
+                    return ERROR_RESULT
+                content = response.content
+                if isinstance(content, bytes):
+                    content = content.decode("utf-8")
+            full_text = ""
+            urls = []
+            for line in content.split("\n"):
                 line = line.strip()
-                if not line.startswith('data: '):
+                if not line.startswith("data: "):
                     continue
                 data_str = line[6:]
-                if not data_str or data_str == '[DONE]':
+                if not data_str or data_str == "[DONE]":
                     continue
                 try:
                     json_data = json.loads(data_str)
@@ -235,47 +249,11 @@ class Deef:
                 for block in json_data.get("blocks", []):
                     intended_usage = block.get("intended_usage", "")
                     if intended_usage == "sources_answer_mode":
-                        sources_block = block.get("sources_mode_block", {})
-                        web_results = sources_block.get("web_results", [])
-                        if web_results and not sources_sent:
-                            yield {"type": "sources", "sources": web_results}
-                            sources_sent = True
-                        continue
-                    if intended_usage == "media_items":
-                        media_block = block.get("media_block", {})
-                        media_items = media_block.get("media_items", [])
-                        if media_items:
-                            items = []
-                            for item in media_items:
-                                items.append({
-                                    "media_type": item.get("medium", "unknown"),
-                                    "url": item.get("url", ""),
-                                    "title": item.get("name", ""),
-                                    "width": item.get("image_width"),
-                                    "height": item.get("image_height")
-                                })
-                            yield {"type": "media", "items": items}
-                        continue
-                    if intended_usage in ("pro_search_steps", "plan"):
-                        plan_block = block.get("plan_block", {})
-                        if plan_block:
-                            goals = plan_block.get("goals", [])
-                            progress = plan_block.get("progress", "")
-                            for goal in goals:
-                                if isinstance(goal, str) and goal:
-                                    yield {"type": "reasoning", "content": goal, "status": "thinking"}
-                            if progress == "DONE":
-                                yield {"type": "reasoning", "content": "", "status": "done"}
-                        diff_block = block.get("diff_block", {})
-                        if diff_block.get("field") == "plan_block":
-                            for patch in diff_block.get("patches", []):
-                                if patch.get("path", "").startswith("/goals"):
-                                    value = patch.get("value", "")
-                                    if isinstance(value, str) and value:
-                                        new_reasoning = value[len(full_reasoning):] if value.startswith(full_reasoning) else value
-                                        if new_reasoning:
-                                            full_reasoning = value if value.startswith(full_reasoning) else full_reasoning + value
-                                            yield {"type": "reasoning", "content": new_reasoning, "status": "thinking"}
+                        web_results = block.get("sources_mode_block", {}).get("web_results", [])
+                        for wr in web_results:
+                            url = wr.get("url", "")
+                            if url and url not in urls:
+                                urls.append(url)
                         continue
                     if intended_usage != "ask_text_0_markdown":
                         continue
@@ -286,60 +264,75 @@ class Deef:
                         value = patch.get("value", "")
                         if isinstance(value, dict) and "chunks" in value:
                             text = "".join(value.get("chunks", []))
-                            if text and len(text) > len(full_response):
-                                new_text = text[len(full_response):]
-                                full_response = text
-                                yield {"type": "text", "content": new_text}
+                            if text and len(text) > len(full_text):
+                                full_text = text
                         elif patch.get("op") == "add" and isinstance(value, str) and value:
-                            full_response += value
-                            yield {"type": "text", "content": value}
-                if "related_query_items" in json_data:
-                    followups = [i.get("text", "") for i in json_data["related_query_items"]]
-                    if followups:
-                        yield {"type": "followups", "followups": followups}
-                if json_data.get("status") == "COMPLETED":
-                    yield {"type": "finish", "reason": "stop"}
+                            full_text += value
+            return {"text": full_text or "Error", "urls": urls}
+        except Exception as e:
+            logger.error(f"Deef.perplexity_ask: {e}")
+            return ERROR_RESULT
 
 
 class ChatGPT:
-    def __init__(self, url: str, headers: dict):
+    '''Клиент для OpenAI-совместимых API'''
+    def __init__(self, url: str, headers: dict, impersonate: str = None):
         self.url = url.rstrip("/")
         self.headers = headers
+        self._session = CurlSession(impersonate=impersonate)
+        self._session.headers.update(headers)
 
-    def _make_request(self, method: str, endpoint: str, data: dict = None, files: dict = None) -> Union[dict, list]:
+    def _make_request(self, method: str, endpoint: str, data: Optional[dict] = None, files: Optional[dict] = None) -> Union[dict, list]:
+        '''Выполняет HTTP-запрос к API'''
+        url = f"{self.url}/{endpoint.lstrip('/')}"
         try:
-            url = f"{self.url}/{endpoint.lstrip('/')}"
             if files:
-                response = requests.request(method=method, url=url, headers=self.headers, files=files, data=data)
+                response = self._session.request(method=method, url=url, files=files, data=data, timeout=120)
             else:
-                response = requests.request(method=method, url=url, headers=self.headers, json=data)
+                response = self._session.request(method=method, url=url, json=data, timeout=120)
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            print(f"ChatGPT({endpoint}): {e}")
-            return "Error"
+            logger.error(f"ChatGPT({endpoint}): {e}")
+            return {"error": str(e)}
 
-    def generate_chat_completion(self, model: str, messages: list, temperature: float = None, max_tokens: int = None, stream: bool = False, **kwargs) -> Union[dict, list]:
-        data = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens, "stream": stream, **kwargs}
+    def generate_chat_completion(self, model: str, messages: list, temperature: Optional[float] = None, max_tokens: Optional[int] = None, stream: bool = False, **kwargs) -> dict:
+        '''Генерация ответа в чате'''
+        data = {"model": model, "messages": messages, "stream": stream, **kwargs}
+        if temperature is not None:
+            data["temperature"] = temperature
+        if max_tokens is not None:
+            data["max_tokens"] = max_tokens
         return self._make_request("POST", "chat/completions", data=data)
 
     def generate_image(self, prompt: str, n: int = 1, size: str = "1024x1024", response_format: str = "url", **kwargs) -> dict:
+        '''Генерация изображения'''
         data = {"prompt": prompt, "n": n, "size": size, "response_format": response_format, **kwargs}
         return self._make_request("POST", "images/generations", data=data)
 
-    def generate_embedding(self, model: str, input_i: Union[str, list], user: str = None, **kwargs) -> dict:
-        data = {"model": model, "input": input_i, "user": user, **kwargs}
+    def generate_embedding(self, model: str, input_data: Union[str, list], user: Optional[str] = None, **kwargs) -> dict:
+        '''Генерация embedding-вектора'''
+        data = {"model": model, "input": input_data, **kwargs}
+        if user:
+            data["user"] = user
         return self._make_request("POST", "embeddings", data=data)
 
-    def generate_transcription(self, file: BinaryIO, model: str, language: str = None, prompt: str = None, response_format: str = "json", temperature: float = 0, **kwargs) -> Union[dict, str]:
-        data = {"model": model, "language": language, "prompt": prompt, "response_format": response_format, "temperature": temperature, **kwargs}
-        files = {"file": file}
-        return self._make_request("POST", "audio/transcriptions", data=data, files=files)
+    def generate_transcription(self, file: BinaryIO, model: str, language: Optional[str] = None, prompt: Optional[str] = None, response_format: str = "json", temperature: float = 0, **kwargs) -> Union[dict, str]:
+        '''Транскрипция аудио'''
+        data = {"model": model, "response_format": response_format, "temperature": temperature, **kwargs}
+        if language:
+            data["language"] = language
+        if prompt:
+            data["prompt"] = prompt
+        return self._make_request("POST", "audio/transcriptions", data=data, files={"file": file})
 
-    def generate_translation(self, file: BinaryIO, model: str, prompt: str = None, response_format: str = "json", temperature: float = 0, **kwargs) -> Union[dict, str]:
-        data = {"model": model, "prompt": prompt, "response_format": response_format, "temperature": temperature, **kwargs}
-        files = {"file": file}
-        return self._make_request("POST", "audio/translations", data=data, files=files)
-    
-    def get_models(self):
+    def generate_translation(self, file: BinaryIO, model: str, prompt: Optional[str] = None, response_format: str = "json", temperature: float = 0, **kwargs) -> Union[dict, str]:
+        '''Перевод аудио'''
+        data = {"model": model, "response_format": response_format, "temperature": temperature, **kwargs}
+        if prompt:
+            data["prompt"] = prompt
+        return self._make_request("POST", "audio/translations", data=data, files={"file": file})
+
+    def get_models(self) -> dict:
+        '''Список доступных моделей'''
         return self._make_request("GET", "models")

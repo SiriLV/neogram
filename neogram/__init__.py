@@ -49,6 +49,7 @@ __all__ = [
     'ChatBoostSourcePremium',
     'ChatBoostUpdated',
     'ChatFullInfo',
+    'ChatGPT',
     'ChatInviteLink',
     'ChatJoinRequest',
     'ChatLocation',
@@ -72,6 +73,7 @@ __all__ = [
     'ChosenInlineResult',
     'Contact',
     'CopyTextButton',
+    'Deef',
     'Dice',
     'DirectMessagePriceChanged',
     'DirectMessagesTopic',
@@ -177,6 +179,8 @@ __all__ = [
     'MessageOriginUser',
     'MessageReactionCountUpdated',
     'MessageReactionUpdated',
+    'OnlySQ',
+    'OpenAI',
     'OrderInfo',
     'OwnedGift',
     'OwnedGiftRegular',
@@ -289,7 +293,4 @@ __all__ = [
     'WebAppInfo',
     'WebhookInfo',
     'WriteAccessAllowed',
-    'OnlySQ',
-    'Deef',
-    'ChatGPT'
 ]
