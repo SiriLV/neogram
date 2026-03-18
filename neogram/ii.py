@@ -139,7 +139,7 @@ class Deef:
             return None
 
     def perplexity_ask(self, model: str, query: str) -> dict:
-        '''Запрос к Perplexity AI (неофициальный). Модели загружаются динамически из конфига Perplexity. Если модель не найдена — используется дефолтная.
+        '''Запрос к Perplexity AI. Если модель не найдена — используется turbo.
         Args:
             model: Название модели (например "o3pro", "turbo", "auto")
             query: Текст запроса
@@ -165,9 +165,12 @@ class Deef:
             "browser_agent": "browser_agent",
             "asi": "asi"}
         try:
-            with CurlSession(impersonate="chrome") as config_session:
-                config_resp = config_session.get(f"{BASE_URL}/rest/models/config", params={"config_schema": "v1", "version": "2.18", "source": "default"}, timeout=15)
-                config_json = config_resp.json()
+            try:
+                with CurlSession(impersonate="chrome") as config_session:
+                    config_resp = config_session.get(f"{BASE_URL}/rest/models/config", params={"config_schema": "v1", "version": "2.18", "source": "default"}, timeout=15)
+                    config_json = config_resp.json() if config_resp.status_code == 200 and config_resp.content else {}
+            except Exception:
+                config_json = {}
             models_map = config_json.get("models", {})
             default_models = config_json.get("default_models", {})
             available_models = list(models_map.keys())
@@ -192,7 +195,10 @@ class Deef:
                 "x-perplexity-request-reason": "perplexity-query-state-provider"}
             with CurlSession(headers=headers, timeout=300, impersonate="chrome") as session:
                 resp = session.get(f"{BASE_URL}/api/auth/session")
-                user_id = resp.json().get("user", {}).get("id")
+                try:
+                    user_id = resp.json().get("user", {}).get("id") if resp.content else None
+                except (json.JSONDecodeError, ValueError):
+                    user_id = None
                 if model == "auto":
                     model = "pplx_pro" if user_id else default_models.get("search", "turbo")
                     api_mode = resolve_mode(model)

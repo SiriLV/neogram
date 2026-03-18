@@ -2828,6 +2828,7 @@ class Bot:
         except TelegramError:
             raise
         except Exception as e:
+            self.session = CurlSession(impersonate=self.impersonate)
             raise TelegramError(method, {"error_code": 0, "description": str(e)}) from e
 
     def get_updates(self, offset: Optional[int] = None, limit: Optional[int] = None, timeout: Optional[int] = None, allowed_updates: Optional[List[str]] = None) -> Optional[List["Update"]]:
